@@ -1,0 +1,11 @@
+# Core numerical/scientific packages
+numpy==1.26.4
+scipy==1.11.3
+pandas==2.2.0
+
+# Machine learning
+scikit-learn==1.5.2
+joblib==1.3.2
+
+# Optional utilities
+pydantic==1.10.14
