@@ -1,0 +1,110 @@
+version: '3.8'
+
+services:
+  mlflow:
+    build:
+      context: ./services/mlflow
+      dockerfile: Dockerfile
+    working_dir: /app
+    volumes:
+      - mlflow-data:/app/mlflow/mlruns
+    ports:
+      - "5000:5000"
+    networks:
+      - mlflow-net
+
+  training:
+    build:
+      context: ./services/training
+      dockerfile: Dockerfile
+    working_dir: /app
+    volumes:
+      - ./:/app
+    ports:
+      - "8888:8888"
+    networks:
+      - mlflow-net
+
+  mlflow-serve:
+    build:
+      context: ./services/mlflow
+      dockerfile: Dockerfile
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - ./mlruns:/app/mlruns
+    ports:
+      - "1234:1234"
+    networks:
+      - mlflow-net
+      - kafka-net
+    environment:
+      MLFLOW_TRACKING_URI: "http://mlflow:5000" 
+    command: mlflow models serve -m "models:/credit_card_fraud_model/1" -p 1234 --host 0.0.0.0 --no-conda
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.1
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - kafka-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.1
+    hostname: kafka
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+    ports:
+      - "29092:29092"
+    networks:
+      - kafka-net
+
+  kafka-producer:
+    build:
+      context: ./services/kafka-producer
+      dockerfile: Dockerfile
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+    ports:
+      - "8000:8000"
+    networks:
+      - kafka-net
+
+  kafka-consumer:
+    build:
+      context: ./services/kafka-consumer
+      dockerfile: Dockerfile
+    depends_on:
+      - kafka
+    ports:
+      - "8001:8001"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+    networks:
+      - kafka-net
+
+networks:
+  kafka-net:
+    driver: bridge
+  mlflow-net: 
+    driver: bridge
+
+volumes:
+  mlflow-data:
