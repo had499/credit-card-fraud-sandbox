@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   mlflow:
     build:
@@ -7,32 +5,19 @@ services:
       dockerfile: Dockerfile
     working_dir: /app
     volumes:
-      - mlflow-data:/app/mlflow/mlruns
+      - ./services/mlflow:/mlflow
     ports:
       - "5000:5000"
     networks:
       - mlflow-net
 
-  training:
-    build:
-      context: ./services/training
-      dockerfile: Dockerfile
-    working_dir: /app
-    volumes:
-      - ./:/app
-    ports:
-      - "8888:8888"
-    networks:
-      - mlflow-net
-
   mlflow-serve:
     build:
-      context: ./services/mlflow
+      context: ./services/mlflow-serve
       dockerfile: Dockerfile
     working_dir: /app
     volumes:
-      - ./:/app
-      - ./mlruns:/app/mlruns
+      - ./services/mlflow:/mlflow
     ports:
       - "1234:1234"
     networks:
@@ -40,7 +25,6 @@ services:
       - kafka-net
     environment:
       MLFLOW_TRACKING_URI: "http://mlflow:5000" 
-    command: mlflow models serve -m "models:/credit_card_fraud_model/1" -p 1234 --host 0.0.0.0 --no-conda
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.1
@@ -68,7 +52,11 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-
+    healthcheck:
+      test: ["CMD", "bash", "-c", "nc -z localhost 9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     ports:
       - "29092:29092"
     networks:
@@ -87,24 +75,40 @@ services:
     networks:
       - kafka-net
 
+
   kafka-consumer:
     build:
       context: ./services/kafka-consumer
       dockerfile: Dockerfile
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
+      websocket:
+        condition: service_started
     ports:
       - "8001:8001"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      WS_SERVER_URL: "http://websocket:8002/publish"
     networks:
       - kafka-net
+      - websocket-net
+
+  websocket:
+    build: 
+      context: ./services/websocket
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    restart: always
+    networks:
+      - websocket-net
+
 
 networks:
   kafka-net:
     driver: bridge
   mlflow-net: 
     driver: bridge
-
-volumes:
-  mlflow-data:
+  websocket-net:
+    driver: bridge
