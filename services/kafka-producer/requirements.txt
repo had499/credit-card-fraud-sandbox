@@ -6,3 +6,5 @@ numpy==1.26.4
 scipy==1.11.3
 pydantic==1.10.14
 pandas
+imbalanced-learn
+scikit-learn==1.5.2
