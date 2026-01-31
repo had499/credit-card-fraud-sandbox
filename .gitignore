@@ -3,7 +3,6 @@ __pycache__/
 .venv/
 venv/
 .env
-mlruns/
 data/raw/
 data/processed/
 .ipynb_checkpoints/
