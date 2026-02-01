@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ex
 
-MODEL_URI="models:/credit-card-fraud/1"
+MODEL_URI="models:/credit-card-fraud/2"
 PORT=1234
 
 echo "Resolving dependencies for $MODEL_URI ..."
