@@ -5,7 +5,8 @@ import time
 import uuid
 from typing import Optional, Dict
 from pathlib import Path
-from fastapi import FastAPI
+from collections import defaultdict, deque
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from kafka import KafkaProducer
@@ -20,16 +21,13 @@ DEFAULT_TOPIC = os.environ.get("KAFKA_TOPIC", "transactions")
 
 
 class ProduceRequest(BaseModel):
-    count: int = Field(100, ge=1, le=10000)
+    count: int = Field(100, ge=1, le=100, description="Max 100 transactions per request")
     proportion_dist1: float = Field(0.5, ge=0.0, le=1.0, description="Probability of sampling from dist1")
     topic: Optional[str] = DEFAULT_TOPIC
-    interval_seconds: Optional[float] = Field(0.0, ge=0.0, description="Sleep between sends; 0 for no delay")
+    interval_seconds: Optional[float] = Field(0.0, ge=0.0, le=5.0, description="Sleep between sends; max 5 seconds")
 
 def get_feature_names():
-    return ['V1','V2','V3','V4','V5','V6','V7','V8','V9',
-            'V10','V11','V12','V13','V14','V15','V16','V17','V18',
-            'V19','V20','V21','V22','V23','V24','V25','V26','V27',
-            'V28','Amount']
+    return app.state.test_data[0].columns.tolist()
 
 def load_test_data():
 
@@ -57,6 +55,11 @@ app.add_middleware(
 
 # Dictionary to track multiple concurrent runs: {run_id: {"thread": Thread, "stop_event": Event}}
 active_runs: Dict[str, Dict] = {}
+
+# Rate limiting: track request timestamps per IP (max 10 requests per minute)
+rate_limit_data: Dict[str, deque] = defaultdict(lambda: deque(maxlen=10))
+RATE_LIMIT_WINDOW = 60  # seconds
+RATE_LIMIT_MAX_REQUESTS = 10
 
 
 @app.on_event("startup")
@@ -133,6 +136,10 @@ def produce_background(count: int, proportion_dist1: float, topic: str, interval
         y_non_fraud = y_data[~fraud_mask]
         
         print(f"Run {run_id}: {len(X_fraud)} fraud samples, {len(X_non_fraud)} non-fraud samples available", flush=True)
+        
+        # Wait 2 seconds to allow WebSocket clients to connect and subscribe
+        print(f"Run {run_id}: waiting 2 seconds for clients to connect...", flush=True)
+        time.sleep(2)
 
         for i in range(count):
             if stop_event.is_set():
@@ -165,6 +172,7 @@ def produce_background(count: int, proportion_dist1: float, topic: str, interval
                 "timestamp": time.time(),
             }
             producer.send(topic, payload)
+            producer.flush()  # Ensure message is sent immediately
 
             if interval_seconds and interval_seconds > 0:
                 # allow responsive stop during sleeps
@@ -177,6 +185,8 @@ def produce_background(count: int, proportion_dist1: float, topic: str, interval
                     slept += step
 
         producer.flush()
+
+
         print(f"Run {run_id}: completed successfully, sent {count} transactions")
     except Exception as e:
         print(f"Run {run_id}: error occurred - {str(e)}")
@@ -190,14 +200,35 @@ def produce_background(count: int, proportion_dist1: float, topic: str, interval
 
 
 @app.post("/produce")
-def produce(req: ProduceRequest):
+def produce(req: ProduceRequest, request: Request):
     """Produce credit card transaction messages to Kafka.
 
     proportion_dist1 represents the fraud rate (0.0 = no fraud, 1.0 = all fraud).
     The endpoint returns immediately and message generation happens in background.
     Multiple concurrent requests are supported.
+    Rate limited to 10 requests per minute per IP.
     """
     global active_runs
+    
+    # Rate limiting check
+    client_ip = request.client.host if request.client else "unknown"
+    current_time = time.time()
+    
+    # Clean old requests outside the time window
+    request_times = rate_limit_data[client_ip]
+    while request_times and current_time - request_times[0] > RATE_LIMIT_WINDOW:
+        request_times.popleft()
+    
+    # Check if rate limit exceeded
+    if len(request_times) >= RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Max {RATE_LIMIT_MAX_REQUESTS} requests per {RATE_LIMIT_WINDOW} seconds."
+        )
+    
+    # Add current request timestamp
+    request_times.append(current_time)
+    
     topic = req.topic or DEFAULT_TOPIC
     
     # Generate unique run ID

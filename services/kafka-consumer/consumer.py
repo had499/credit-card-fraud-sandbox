@@ -67,19 +67,24 @@ async def publish_to_ws(message: dict):
 
 def kafka_listener(loop: asyncio.AbstractEventLoop):
     """Kafka consumer loop running in sync, scheduling async WebSocket sends."""
+    import time
+    # Use unique consumer group per session to always read new messages
+    group_id = f"ml-inference-consumer-{int(time.time())}"
     consumer = KafkaConsumer(
         TOPIC,
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-        auto_offset_reset="earliest",
+        auto_offset_reset="latest",  
         enable_auto_commit=True,
-        group_id="ml-inference-consumer",
+        group_id=group_id,
     )
-    print(f"Listening on Kafka topic '{TOPIC}'...", flush=True)
+    print(f"Listening on Kafka topic '{TOPIC}' with group_id={group_id}...", flush=True)
 
     for msg in consumer:
         try:
             data = msg.value
+            print(f"[DEBUG] Received message: transaction_index={data.get('transaction_index')}, run_id={data.get('run_id')}", flush=True)
+            
             samples = data.get("features")
             columns = data.get("feature_names")
             if not samples or not columns:
