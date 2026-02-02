@@ -13,7 +13,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 500M
+          memory: 750M
 
   mlflow-serve:
     build:
