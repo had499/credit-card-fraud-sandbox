@@ -10,6 +10,10 @@ services:
       - "5000:5000"
     networks:
       - mlflow-net
+    deploy:
+      resources:
+        limits:
+          memory: 500M
 
   mlflow-serve:
     build:
@@ -24,44 +28,62 @@ services:
       - mlflow-net
       - kafka-net
     environment:
-      MLFLOW_TRACKING_URI: "http://mlflow:5000" 
+      MLFLOW_TRACKING_URI: "http://mlflow:5000"
+    deploy:
+      resources:
+        limits:
+          memory: 450M
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.1
-    hostname: zookeeper
     container_name: zookeeper
-    ports:
-      - "2181:2181"
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_HEAP_OPTS: "-Xmx200m -Xms200m"
+    ports:
+      - "2181:2181"
     networks:
       - kafka-net
+    deploy:
+      resources:
+        limits:
+          memory: 300M
 
   kafka:
     image: confluentinc/cp-kafka:7.4.1
-    hostname: kafka
     container_name: kafka
     depends_on:
       - zookeeper
     restart: on-failure
+
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # --- SMALL VPS TUNING ---
+      KAFKA_HEAP_OPTS: "-Xmx384m -Xms384m"
+      KAFKA_JVM_PERFORMANCE_OPTS: "-server -XX:+UseG1GC -XX:MaxGCPauseMillis=100"
+
+      # reduce memory footprint
+      KAFKA_LOG_RETENTION_BYTES: 1073741824   # 1GB max
+      KAFKA_LOG_SEGMENT_BYTES: 134217728      # 128MB
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-    healthcheck:
-      test: ["CMD", "bash", "-c", "nc -z localhost 9092"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+
     ports:
-      - "29092:29092"
+      - "9092:9092"
+
     networks:
       - kafka-net
+
+    deploy:
+      resources:
+        limits:
+          memory: 600M
 
   kafka-producer:
     build:
@@ -75,17 +97,18 @@ services:
       - "8000:8000"
     networks:
       - kafka-net
-
+    deploy:
+      resources:
+        limits:
+          memory: 200M
 
   kafka-consumer:
     build:
       context: ./services/kafka-consumer
       dockerfile: Dockerfile
     depends_on:
-      kafka:
-        condition: service_healthy
-      websocket:
-        condition: service_started
+      - kafka
+      - websocket
     ports:
       - "8001:8001"
     environment:
@@ -94,9 +117,13 @@ services:
     networks:
       - kafka-net
       - websocket-net
+    deploy:
+      resources:
+        limits:
+          memory: 200M
 
   websocket:
-    build: 
+    build:
       context: ./services/websocket
       dockerfile: Dockerfile
     ports:
@@ -104,12 +131,15 @@ services:
     restart: always
     networks:
       - websocket-net
-
+    deploy:
+      resources:
+        limits:
+          memory: 200M
 
 networks:
   kafka-net:
     driver: bridge
-  mlflow-net: 
+  mlflow-net:
     driver: bridge
   websocket-net:
     driver: bridge
