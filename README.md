@@ -120,10 +120,6 @@ services/
   kafka-producer/    # Transaction generator API
   kafka-consumer/    # Inference pipeline
   websocket/         # Real-time broadcast server
-  
-data/raw/            # Raw dataset
-mlruns/              # MLflow experiment artifacts
-dashboard/           # Frontend (if applicable)
 ```
 
 Each service has its own Dockerfile and requirements.
