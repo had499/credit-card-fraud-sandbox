@@ -5,6 +5,7 @@ import time
 import uuid
 import signal
 import sys
+import random
 from typing import Optional, Dict
 from pathlib import Path
 from collections import defaultdict, deque
@@ -70,6 +71,10 @@ def startup_event():
     global producer
     
     app.state.test_data = load_test_data()
+    if not app.state.test_data or len(app.state.test_data) < 2:
+        print(f"[ERROR] Failed to load test data", flush=True)
+        sys.exit(1)
+    
     print(f"Producer API starting, Kafka={BOOTSTRAP} default_topic={DEFAULT_TOPIC}", flush=True)
     
     # Initialize KafkaProducer here, not at module load time
@@ -196,7 +201,6 @@ def produce_background(count: int, proportion_dist1: float, topic: str, interval
                 break
 
             # Randomly decide if this transaction should be fraud based on proportion_dist1
-            import random
             is_fraud_tx = random.random() < proportion_dist1
             
             # Sample from the appropriate dataset
@@ -259,8 +263,15 @@ def produce(req: ProduceRequest, request: Request):
     """
     global active_runs
     
+    # Check if producer is ready
+    if producer is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Producer not ready. Kafka may not be available."
+        )
+    
     # Rate limiting check
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = request.client.host if request.client else "127.0.0.1"
     current_time = time.time()
     
     # Clean old requests outside the time window

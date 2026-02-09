@@ -16,12 +16,11 @@ MLFLOW_PREDICT_URL = "http://mlflow-serve:1234/invocations"
 WS_SERVER_URL = "ws://websocket:8002/ws"
 
 # Kafka connection settings with timeouts
-# Requirements: request_timeout_ms > session_timeout_ms > heartbeat_interval_ms
-# connections_max_idle_ms should be > request_timeout_ms
-KAFKA_HEARTBEAT_INTERVAL = 6000  # 6 seconds
-KAFKA_SESSION_TIMEOUT = 18000  # 18 seconds (3x heartbeat)
-KAFKA_REQUEST_TIMEOUT = 30000  # 30 seconds (must be > session_timeout_ms)
-KAFKA_CONNECTION_TIMEOUT = 45000  # 45 seconds (must be > request_timeout_ms)
+# Strict hierarchy required: connections_max_idle_ms > request_timeout_ms > session_timeout_ms > heartbeat_interval_ms
+KAFKA_HEARTBEAT_INTERVAL = 3000  # 3 seconds
+KAFKA_SESSION_TIMEOUT = 10000  # 10 seconds
+KAFKA_REQUEST_TIMEOUT = 30000  # 30 seconds
+KAFKA_CONNECTION_TIMEOUT = 60000  # 60 seconds
 
 # Global WebSocket connection
 ws_connection = None
@@ -99,8 +98,7 @@ def kafka_listener(loop: asyncio.AbstractEventLoop):
                 auto_offset_reset="latest",
                 enable_auto_commit=True,
                 group_id=group_id,
-                # Connection timeouts to prevent hanging (ordered by requirement)
-                connections_max_idle_ms=KAFKA_CONNECTION_TIMEOUT,
+                # Kafka timeout requirements: request_timeout_ms > session_timeout_ms > heartbeat_interval_ms
                 request_timeout_ms=KAFKA_REQUEST_TIMEOUT,
                 session_timeout_ms=KAFKA_SESSION_TIMEOUT,
                 heartbeat_interval_ms=KAFKA_HEARTBEAT_INTERVAL,
