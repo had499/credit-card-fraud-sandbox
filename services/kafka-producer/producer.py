@@ -3,6 +3,8 @@ import json
 import threading
 import time
 import uuid
+import signal
+import sys
 from typing import Optional, Dict
 from pathlib import Path
 from collections import defaultdict, deque
@@ -10,8 +12,9 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from kafka import KafkaProducer
+from kafka.errors import KafkaError
 import pandas as pd
-from sklearn.utils import resample  
+from sklearn.utils import resample 
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -19,7 +22,9 @@ APP_DIR = Path(__file__).resolve().parent
 BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 DEFAULT_TOPIC = os.environ.get("KAFKA_TOPIC", "transactions")
 
-
+# Kafka connection settings with timeouts
+KAFKA_CONNECTION_TIMEOUT = 10000  # 10 seconds
+KAFKA_REQUEST_TIMEOUT = 15000  # 15 seconds
 class ProduceRequest(BaseModel):
     count: int = Field(100, ge=1, le=100, description="Max 100 transactions per request")
     proportion_dist1: float = Field(0.5, ge=0.0, le=1.0, description="Probability of sampling from dist1")
@@ -37,9 +42,15 @@ def load_test_data():
     return X_data, y_data
     
     
-producer = KafkaProducer(bootstrap_servers=BOOTSTRAP,
-                         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                         api_version=(0, 10))
+producer = KafkaProducer(
+    bootstrap_servers=BOOTSTRAP,
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+    api_version=(0, 10),
+    connections_max_idle_ms=KAFKA_CONNECTION_TIMEOUT,
+    request_timeout_ms=KAFKA_REQUEST_TIMEOUT,
+    retries=3,
+    retry_backoff_ms=100,
+)
 
 app = FastAPI(title="Kafka Producer API")
 
@@ -65,7 +76,27 @@ RATE_LIMIT_MAX_REQUESTS = 10
 @app.on_event("startup")
 def startup_event():
     app.state.test_data = load_test_data()
-    print(f"Producer API starting, Kafka={BOOTSTRAP} default_topic={DEFAULT_TOPIC}")
+    print(f"Producer API starting, Kafka={BOOTSTRAP} default_topic={DEFAULT_TOPIC}", flush=True)
+    
+    # Set up signal handlers for graceful shutdown
+    def signal_handler(sig, frame):
+        print(f"[INFO] Received signal {sig}, initiating graceful shutdown...", flush=True)
+        # Wait for active runs to finish (max 10 seconds)
+        shutdown_timeout = 10
+        start_time = time.time()
+        while active_runs and (time.time() - start_time) < shutdown_timeout:
+            print(f"[INFO] Waiting for {len(active_runs)} active runs to complete...", flush=True)
+            time.sleep(1)
+        
+        if active_runs:
+            print(f"[WARN] Forcefully stopping {len(active_runs)} runs", flush=True)
+            for run_id, run_info in list(active_runs.items()):
+                run_info["stop_event"].set()
+        
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
 
 
 def send_messages(topic: str, messages):
@@ -239,7 +270,7 @@ def produce(req: ProduceRequest, request: Request):
     thread = threading.Thread(
         target=produce_background,
         args=(req.count, req.proportion_dist1, topic, req.interval_seconds, stop_event, run_id),
-        daemon=True
+        daemon=False  # Don't mark as daemon - we want to wait for completion
     )
     
     active_runs[run_id] = {"thread": thread, "stop_event": stop_event, "topic": topic, "count": req.count}
