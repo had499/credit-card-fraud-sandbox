@@ -10,10 +10,19 @@ services:
       - "5000:5000"
     networks:
       - mlflow-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health", "||", "exit", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     deploy:
       resources:
         limits:
-          memory: 750M
+          memory: 700M
+        reservations:
+          memory: 500M
 
   mlflow-serve:
     build:
@@ -27,48 +36,72 @@ services:
     networks:
       - mlflow-net
       - kafka-net
+    restart: unless-stopped
     environment:
       MLFLOW_TRACKING_URI: "http://mlflow:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1234/health", "||", "exit", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      mlflow:
+        condition: service_healthy
     deploy:
       resources:
         limits:
-          memory: 450M
+          memory: 500M
+        reservations:
+          memory: 350M
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.1
     container_name: zookeeper
+    restart: unless-stopped
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-      KAFKA_HEAP_OPTS: "-Xmx200m -Xms200m"
+      KAFKA_HEAP_OPTS: "-Xmx300m -Xms300m"
     ports:
       - "2181:2181"
     networks:
       - kafka-net
+    healthcheck:
+      test: ["CMD", "echo", "ruok", "|", "nc", "127.0.0.1", "2181"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     deploy:
       resources:
         limits:
-          memory: 300M
+          memory: 450M
+        reservations:
+          memory: 350M
 
   kafka:
     image: confluentinc/cp-kafka:7.4.1
     container_name: kafka
     depends_on:
-      - zookeeper
-    restart: on-failure
+      zookeeper:
+        condition: service_healthy
+    restart: unless-stopped
 
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
 
-      # --- SMALL VPS TUNING ---
-      KAFKA_HEAP_OPTS: "-Xmx384m -Xms384m"
+      # --- OPTIMIZED FOR 4GB MAX ---
+      KAFKA_HEAP_OPTS: "-Xmx800m -Xms800m"
       KAFKA_JVM_PERFORMANCE_OPTS: "-server -XX:+UseG1GC -XX:MaxGCPauseMillis=100"
 
-      # reduce memory footprint
+      # Balanced retention
       KAFKA_LOG_RETENTION_BYTES: 1073741824   # 1GB max
-      KAFKA_LOG_SEGMENT_BYTES: 134217728      # 128MB
+      KAFKA_LOG_SEGMENT_BYTES: 268435456      # 256MB
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_NUM_NETWORK_THREADS: 4
+      KAFKA_NUM_IO_THREADS: 4
 
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
@@ -80,26 +113,45 @@ services:
     networks:
       - kafka-net
 
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions.sh", "--bootstrap-server", "kafka:9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
     deploy:
       resources:
         limits:
-          memory: 600M
+          memory: 1.2G
+        reservations:
+          memory: 1G
 
   kafka-producer:
     build:
       context: ./services/kafka-producer
       dockerfile: Dockerfile
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
     ports:
       - "8000:8000"
     networks:
       - kafka-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz", "||", "exit", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     deploy:
       resources:
         limits:
+          memory: 300M
+        reservations:
           memory: 200M
 
   kafka-consumer:
@@ -107,8 +159,11 @@ services:
       context: ./services/kafka-consumer
       dockerfile: Dockerfile
     depends_on:
-      - kafka
-      - websocket
+      kafka:
+        condition: service_healthy
+      websocket:
+        condition: service_healthy
+    restart: unless-stopped
     ports:
       - "8001:8001"
     environment:
@@ -120,6 +175,8 @@ services:
     deploy:
       resources:
         limits:
+          memory: 300M
+        reservations:
           memory: 200M
 
   websocket:
@@ -128,12 +185,20 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8002:8002"
-    restart: always
+    restart: unless-stopped
     networks:
       - websocket-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health", "||", "exit", "1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     deploy:
       resources:
         limits:
+          memory: 300M
+        reservations:
           memory: 200M
 
 networks:
