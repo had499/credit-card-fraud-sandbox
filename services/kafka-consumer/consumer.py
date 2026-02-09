@@ -16,7 +16,7 @@ MLFLOW_PREDICT_URL = "http://mlflow-serve:1234/invocations"
 WS_SERVER_URL = "ws://websocket:8002/ws"
 
 # Kafka connection settings with timeouts
-KAFKA_CONNECTION_TIMEOUT = 10000  # 10 seconds
+KAFKA_CONNECTION_TIMEOUT = 30000  # 30 seconds (must be larger than request_timeout_ms)
 KAFKA_SESSION_TIMEOUT = 30000  # 30 seconds
 KAFKA_HEARTBEAT_INTERVAL = 10000  # 10 seconds
 
