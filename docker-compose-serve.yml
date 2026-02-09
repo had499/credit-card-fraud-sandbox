@@ -150,7 +150,7 @@ services:
       - "8001:8001"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
-      WS_SERVER_URL: "http://websocket:8002/publish"
+      WS_SERVER_URL: "ws://websocket:8002/ws"
     networks:
       - kafka-net
       - websocket-net
