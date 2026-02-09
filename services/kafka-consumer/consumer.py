@@ -5,12 +5,20 @@ import asyncio
 import pandas as pd
 import requests
 from kafka import KafkaConsumer
+from kafka.errors import KafkaError
 import websockets
+import time
+import sys
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 TOPIC = "transactions"
 MLFLOW_PREDICT_URL = "http://mlflow-serve:1234/invocations"
 WS_SERVER_URL = "ws://websocket:8002/ws"
+
+# Kafka connection settings with timeouts
+KAFKA_CONNECTION_TIMEOUT = 10000  # 10 seconds
+KAFKA_SESSION_TIMEOUT = 30000  # 30 seconds
+KAFKA_HEARTBEAT_INTERVAL = 10000  # 10 seconds
 
 # Global WebSocket connection
 ws_connection = None
@@ -68,50 +76,103 @@ async def publish_to_ws(message: dict):
 def kafka_listener(loop: asyncio.AbstractEventLoop):
     """Kafka consumer loop running in sync, scheduling async WebSocket sends."""
     import time
-    # Use unique consumer group per session to always read new messages
-    group_id = f"ml-inference-consumer-{int(time.time())}"
-    consumer = KafkaConsumer(
-        TOPIC,
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-        auto_offset_reset="latest",  
-        enable_auto_commit=True,
-        group_id=group_id,
-    )
-    print(f"Listening on Kafka topic '{TOPIC}' with group_id={group_id}...", flush=True)
-
-    for msg in consumer:
+    
+    retry_count = 0
+    max_retries = 5
+    
+    while True:
         try:
-            data = msg.value
-            print(f"[DEBUG] Received message: transaction_index={data.get('transaction_index')}, run_id={data.get('run_id')}", flush=True)
+            retry_count = 0
+            # Use unique consumer group per session to always read new messages
+            group_id = f"ml-inference-consumer-{int(time.time())}"
             
-            samples = data.get("features")
-            columns = data.get("feature_names")
-            if not samples or not columns:
-                print(f"[WARN] Skipping message - missing features or feature_names", flush=True)
-                continue
+            print(f"[INFO] Attempting to connect to Kafka at {KAFKA_BOOTSTRAP_SERVERS}...", flush=True)
+            
+            consumer = KafkaConsumer(
+                TOPIC,
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+                auto_offset_reset="latest",
+                enable_auto_commit=True,
+                group_id=group_id,
+                # Connection timeouts to prevent hanging
+                connections_max_idle_ms=KAFKA_CONNECTION_TIMEOUT,
+                session_timeout_ms=KAFKA_SESSION_TIMEOUT,
+                heartbeat_interval_ms=KAFKA_HEARTBEAT_INTERVAL,
+                request_timeout_ms=15000,  # 15 second request timeout
+                api_version_auto_discovery_interval_ms=10000,
+            )
+            
+            print(f"[SUCCESS] Connected to Kafka. Listening on topic '{TOPIC}' with group_id={group_id}...", flush=True)
 
-            df = pd.DataFrame([samples], columns=columns)
-            prediction = predict_with_mlflow(df)
+            for msg in consumer:
+                try:
+                    data = msg.value
+                    print(f"[DEBUG] Received message: transaction_index={data.get('transaction_index')}, run_id={data.get('run_id')}", flush=True)
+                    
+                    samples = data.get("features")
+                    columns = data.get("feature_names")
+                    if not samples or not columns:
+                        print(f"[WARN] Skipping message - missing features or feature_names", flush=True)
+                        continue
 
-            result = {
-                "transaction_index": data.get("transaction_index"),
-                "prediction": prediction,
-                "is_fraud": data.get("is_fraud"),
-                "amount": data.get("amount"),
-                "timestamp": data.get("timestamp"),
-                "run_id": data.get("run_id"),
-            }
+                    df = pd.DataFrame([samples], columns=columns)
+                    prediction = predict_with_mlflow(df)
 
-            # Schedule WebSocket send in the async loop
-            asyncio.run_coroutine_threadsafe(publish_to_ws(result), loop)
+                    result = {
+                        "transaction_index": data.get("transaction_index"),
+                        "prediction": prediction,
+                        "is_fraud": data.get("is_fraud"),
+                        "amount": data.get("amount"),
+                        "timestamp": data.get("timestamp"),
+                        "run_id": data.get("run_id"),
+                    }
+
+                    # Schedule WebSocket send in the async loop
+                    asyncio.run_coroutine_threadsafe(publish_to_ws(result), loop)
+                except KafkaError as e:
+                    print(f"[ERROR] Kafka error during message processing: {e}, will attempt reconnection", flush=True)
+                    raise  # Re-raise to trigger reconnection
+                except Exception as e:
+                    print(f"[ERROR] Message processing failed: {e}", flush=True)
+                    # Continue on non-Kafka errors
+        
+        except KafkaError as e:
+            retry_count += 1
+            wait_time = min(2 ** retry_count, 30)  # Exponential backoff, max 30 seconds
+            print(f"[ERROR] Kafka connection failed (attempt {retry_count}/{max_retries}): {e}", flush=True)
+            print(f"[INFO] Retrying in {wait_time}s...", flush=True)
+            
+            if retry_count >= max_retries:
+                print(f"[CRITICAL] Failed to connect to Kafka after {max_retries} attempts. Exiting.", flush=True)
+                sys.exit(1)
+            
+            time.sleep(wait_time)
         except Exception as e:
-            print(f"[ERROR] Kafka processing failed: {e}", flush=True)
+            retry_count += 1
+            wait_time = min(2 ** retry_count, 30)
+            print(f"[ERROR] Unexpected error (attempt {retry_count}/{max_retries}): {e}", flush=True)
+            print(f"[INFO] Retrying in {wait_time}s...", flush=True)
+            
+            if retry_count >= max_retries:
+                print(f"[CRITICAL] Max retries exceeded. Exiting.", flush=True)
+                sys.exit(1)
+            
+            time.sleep(wait_time)
 
 
 async def main():
     """Main async function to run both WebSocket connection and Kafka consumer."""
     loop = asyncio.get_event_loop()
+    
+    # Set up signal handlers for graceful shutdown
+    def signal_handler(sig, frame):
+        print(f"[INFO] Received signal {sig}, initiating graceful shutdown...", flush=True)
+        sys.exit(0)
+    
+    import signal
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
     # Start WebSocket connection maintenance in background
     ws_task = asyncio.create_task(maintain_ws_connection())
@@ -121,7 +182,7 @@ async def main():
     
     # Start Kafka consumer in a separate thread (since it's blocking)
     import threading
-    kafka_thread = threading.Thread(target=kafka_listener, args=(loop,), daemon=True)
+    kafka_thread = threading.Thread(target=kafka_listener, args=(loop,), daemon=False)
     kafka_thread.start()
     
     # Keep running
@@ -130,4 +191,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    loop.run_forever()
