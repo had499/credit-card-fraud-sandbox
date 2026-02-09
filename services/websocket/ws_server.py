@@ -1,5 +1,7 @@
 import asyncio
 import json
+import signal
+import sys
 from typing import Dict, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
@@ -10,6 +12,38 @@ app = FastAPI()
 subscriptions: Dict[str, Set[WebSocket]] = {}
 # Track all producers
 producers: Set[WebSocket] = set()
+
+# Graceful shutdown flag
+shutdown_event: asyncio.Event = None
+
+
+@app.on_event("startup")
+def startup_event():
+    """Set up signal handlers for graceful shutdown."""
+    def signal_handler(sig, frame):
+        print(f"[INFO] Received signal {sig}, closing all connections...", flush=True)
+        # Close all WebSocket connections gracefully
+        for ws in list(producers) + sum([list(subs) for subs in subscriptions.values()], []):
+            try:
+                asyncio.create_task(ws.close())
+            except Exception as e:
+                print(f"[WARN] Error closing connection: {e}", flush=True)
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    print(f"[INFO] WebSocket server started, ready for connections", flush=True)
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for container orchestration."""
+    return {
+        "status": "healthy",
+        "producers": len(producers),
+        "total_subscribers": sum(len(subs) for subs in subscriptions.values()),
+        "subscriptions": len(subscriptions)
+    }
 
 
 @app.websocket("/ws")
@@ -159,4 +193,10 @@ async def broadcast_to_subscribers(message: dict, run_id: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8002,
+        log_level="info",
+        access_log=True
+    )
