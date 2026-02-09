@@ -21,13 +21,7 @@ shutdown_event: asyncio.Event = None
 def startup_event():
     """Set up signal handlers for graceful shutdown."""
     def signal_handler(sig, frame):
-        print(f"[INFO] Received signal {sig}, closing all connections...", flush=True)
-        # Close all WebSocket connections gracefully
-        for ws in list(producers) + sum([list(subs) for subs in subscriptions.values()], []):
-            try:
-                asyncio.create_task(ws.close())
-            except Exception as e:
-                print(f"[WARN] Error closing connection: {e}", flush=True)
+        print(f"[INFO] Received signal {sig}, initiating shutdown...", flush=True)
         sys.exit(0)
     
     signal.signal(signal.SIGTERM, signal_handler)

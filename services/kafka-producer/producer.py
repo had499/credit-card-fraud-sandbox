@@ -42,15 +42,7 @@ def load_test_data():
     return X_data, y_data
     
     
-producer = KafkaProducer(
-    bootstrap_servers=BOOTSTRAP,
-    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-    api_version=(0, 10),
-    connections_max_idle_ms=KAFKA_CONNECTION_TIMEOUT,
-    request_timeout_ms=KAFKA_REQUEST_TIMEOUT,
-    retries=3,
-    retry_backoff_ms=100,
-)
+producer = None
 
 app = FastAPI(title="Kafka Producer API")
 
@@ -75,8 +67,25 @@ RATE_LIMIT_MAX_REQUESTS = 10
 
 @app.on_event("startup")
 def startup_event():
+    global producer
+    
     app.state.test_data = load_test_data()
     print(f"Producer API starting, Kafka={BOOTSTRAP} default_topic={DEFAULT_TOPIC}", flush=True)
+    
+    # Initialize KafkaProducer here, not at module load time
+    try:
+        producer = KafkaProducer(
+            bootstrap_servers=BOOTSTRAP,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            api_version=(0, 10),
+            connections_max_idle_ms=KAFKA_CONNECTION_TIMEOUT,
+            request_timeout_ms=KAFKA_REQUEST_TIMEOUT,
+            retries=3,
+            retry_backoff_ms=100,
+        )
+        print(f"[SUCCESS] KafkaProducer initialized", flush=True)
+    except Exception as e:
+        print(f"[WARN] KafkaProducer initialization failed: {e}. Will retry on first use.", flush=True)
     
     # Set up signal handlers for graceful shutdown
     def signal_handler(sig, frame):
@@ -100,6 +109,9 @@ def startup_event():
 
 
 def send_messages(topic: str, messages):
+    global producer
+    if producer is None:
+        raise RuntimeError("KafkaProducer not initialized. Is Kafka available?")
     for msg in messages:
         producer.send(topic, msg)
     producer.flush()
@@ -156,7 +168,13 @@ def resample_to_target_fraction(X, y, target_fraction: float, random_state=None)
 
 def produce_background(count: int, proportion_dist1: float, topic: str, interval_seconds: float, stop_event: threading.Event, run_id: str):
     """Generate and send credit card transaction messages until count is reached or stop_event is set."""
+    global producer
+    
     try:
+        # Ensure producer is initialized
+        if producer is None:
+            raise RuntimeError("KafkaProducer not initialized. Is Kafka available?")
+        
         X_data, y_data = app.state.test_data
         
         # Separate fraud and non-fraud transactions

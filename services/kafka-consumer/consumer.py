@@ -79,6 +79,7 @@ def kafka_listener(loop: asyncio.AbstractEventLoop):
     
     retry_count = 0
     max_retries = 5
+    consumer = None
     
     while True:
         try:
@@ -100,7 +101,6 @@ def kafka_listener(loop: asyncio.AbstractEventLoop):
                 session_timeout_ms=KAFKA_SESSION_TIMEOUT,
                 heartbeat_interval_ms=KAFKA_HEARTBEAT_INTERVAL,
                 request_timeout_ms=15000,  # 15 second request timeout
-                api_version_auto_discovery_interval_ms=10000,
             )
             
             print(f"[SUCCESS] Connected to Kafka. Listening on topic '{TOPIC}' with group_id={group_id}...", flush=True)
@@ -138,6 +138,13 @@ def kafka_listener(loop: asyncio.AbstractEventLoop):
                     # Continue on non-Kafka errors
         
         except KafkaError as e:
+            if consumer:
+                try:
+                    consumer.close()
+                except Exception as close_err:
+                    print(f"[WARN] Error closing consumer: {close_err}", flush=True)
+                consumer = None
+            
             retry_count += 1
             wait_time = min(2 ** retry_count, 30)  # Exponential backoff, max 30 seconds
             print(f"[ERROR] Kafka connection failed (attempt {retry_count}/{max_retries}): {e}", flush=True)
@@ -149,6 +156,13 @@ def kafka_listener(loop: asyncio.AbstractEventLoop):
             
             time.sleep(wait_time)
         except Exception as e:
+            if consumer:
+                try:
+                    consumer.close()
+                except Exception as close_err:
+                    print(f"[WARN] Error closing consumer: {close_err}", flush=True)
+                consumer = None
+            
             retry_count += 1
             wait_time = min(2 ** retry_count, 30)
             print(f"[ERROR] Unexpected error (attempt {retry_count}/{max_retries}): {e}", flush=True)
@@ -163,7 +177,7 @@ def kafka_listener(loop: asyncio.AbstractEventLoop):
 
 async def main():
     """Main async function to run both WebSocket connection and Kafka consumer."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     
     # Set up signal handlers for graceful shutdown
     def signal_handler(sig, frame):
@@ -185,8 +199,17 @@ async def main():
     kafka_thread = threading.Thread(target=kafka_listener, args=(loop,), daemon=False)
     kafka_thread.start()
     
-    # Keep running
-    await ws_task
+    try:
+        # Keep running - wait for ws_task (which runs forever)
+        await ws_task
+    except KeyboardInterrupt:
+        print(f"[INFO] Interrupted, waiting for kafka thread to finish...", flush=True)
+        kafka_thread.join(timeout=5)
+    except Exception as e:
+        print(f"[ERROR] Main loop error: {e}", flush=True)
+        kafka_thread.join(timeout=5)
+    finally:
+        print(f"[INFO] Shutdown complete", flush=True)
 
 
 if __name__ == "__main__":
