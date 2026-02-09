@@ -16,7 +16,9 @@ MLFLOW_PREDICT_URL = "http://mlflow-serve:1234/invocations"
 WS_SERVER_URL = "ws://websocket:8002/ws"
 
 # Kafka connection settings with timeouts
-KAFKA_CONNECTION_TIMEOUT = 30000  # 30 seconds (must be larger than request_timeout_ms)
+# Note: connections_max_idle_ms > request_timeout_ms > session_timeout_ms > heartbeat_interval_ms
+KAFKA_CONNECTION_TIMEOUT = 60000  # 60 seconds
+KAFKA_REQUEST_TIMEOUT = 45000  # 45 seconds
 KAFKA_SESSION_TIMEOUT = 30000  # 30 seconds
 KAFKA_HEARTBEAT_INTERVAL = 10000  # 10 seconds
 
@@ -96,11 +98,11 @@ def kafka_listener(loop: asyncio.AbstractEventLoop):
                 auto_offset_reset="latest",
                 enable_auto_commit=True,
                 group_id=group_id,
-                # Connection timeouts to prevent hanging
+                # Connection timeouts to prevent hanging (ordered by requirement)
                 connections_max_idle_ms=KAFKA_CONNECTION_TIMEOUT,
+                request_timeout_ms=KAFKA_REQUEST_TIMEOUT,
                 session_timeout_ms=KAFKA_SESSION_TIMEOUT,
                 heartbeat_interval_ms=KAFKA_HEARTBEAT_INTERVAL,
-                request_timeout_ms=15000,  # 15 second request timeout
             )
             
             print(f"[SUCCESS] Connected to Kafka. Listening on topic '{TOPIC}' with group_id={group_id}...", flush=True)
